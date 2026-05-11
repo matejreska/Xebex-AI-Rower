@@ -5,13 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="description" content="AI trenér pro veslařské trenažéry Xebex a Concept2 s chytrou detekcí fází.">
     <title>Xebex AI</title>
-    <!-- VYNUCENÝ UPDATE: Tento soubor obsahuje v5.0 (auto-connect, oprava času, AI fallback) -->
-    <!-- Poznámka pro produkci: Pro maximální výkon nahraďte toto CDN vygenerovaným lokálním CSS souborem přes Tailwind CLI -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
-        /* Změna na 100dvh - přesně respektuje výšku mobilních prohlížečů včetně lišt */
+        
         html, body { height: 100dvh; width: 100vw; overflow: hidden; overscroll-behavior: none; background-color: #0f172a; }
 
         body {
@@ -42,7 +40,7 @@
 
         input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 
-        /* Nový styl pro rozdělený časovač */
+        
         .time-input-container { display: flex; align-items: center; border-bottom: 2px solid #06b6d4; transition: border-color 0.3s; padding-bottom: 2px;}
         .time-input-container:focus-within { border-bottom: 2px solid #22d3ee; }
         .time-input { background: transparent; border: none; color: #ffffff; text-align: center; font-family: monospace; font-weight: bold; font-size: 1.2rem; width: 32px; outline: none; }
@@ -383,7 +381,7 @@
         cals: document.getElementById('calsValue')
     };
 
-    // --- CHYTRÉ CHYTÁNÍ CHYB AI S MANUÁLNÍM FALLBACKEM ---
+    
     async function saveWorkoutAndGetSummary(stats, isDemo = false) {
         if (!db) return;
 
@@ -764,7 +762,7 @@
     function adjustTime(type, valSec) {
         let current = getSecondsFromInputs(type);
         current += valSec;
-        if (current < 5) current = 5; // Minimum 5 sekund
+        if (current < 5) current = 5; 
         setInputsFromSeconds(type, current);
         saveSettings();
     }
