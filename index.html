@@ -1,0 +1,1356 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="description" content="AI trenér pro veslařské trenažéry Xebex a Concept2 s chytrou detekcí fází.">
+    <title>Xebex AI</title>
+    <!-- VYNUCENÝ UPDATE: Tento soubor obsahuje v5.0 (auto-connect, oprava času, AI fallback) -->
+    <!-- Poznámka pro produkci: Pro maximální výkon nahraďte toto CDN vygenerovaným lokálním CSS souborem přes Tailwind CLI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js" defer></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        /* Změna na 100dvh - přesně respektuje výšku mobilních prohlížečů včetně lišt */
+        html, body { height: 100dvh; width: 100vw; overflow: hidden; overscroll-behavior: none; background-color: #0f172a; }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        @keyframes breath-work {
+            0% { background: radial-gradient(circle at center, rgba(153, 27, 27, 0.5) 0%, rgba(15, 23, 42, 1) 70%); }
+            100% { background: radial-gradient(circle at center, rgba(220, 38, 38, 0.7) 0%, rgba(15, 23, 42, 1) 90%); }
+        }
+        @keyframes breath-rest {
+            0% { background: radial-gradient(circle at center, rgba(8, 145, 178, 0.3) 0%, rgba(15, 23, 42, 1) 70%); }
+            100% { background: radial-gradient(circle at center, rgba(6, 182, 212, 0.5) 0%, rgba(15, 23, 42, 1) 90%); }
+        }
+
+        .bg-work { animation: breath-work 1.5s infinite alternate ease-in-out; }
+        .bg-rest { animation: breath-rest 3s infinite alternate ease-in-out; }
+
+        .flash-overlay { position: absolute; inset: 0; pointer-events: none; z-index: 50; background-color: white; opacity: 0; transition: opacity 0.2s; }
+        .flash-active { opacity: 0.7; }
+
+        .btn-disabled { opacity: 0.4; cursor: not-allowed; filter: grayscale(100%); }
+        .tab-content { display: none; height: 100%; flex-direction: column; overflow: hidden; }
+        .tab-content.active { display: flex; }
+
+        input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+        /* Nový styl pro rozdělený časovač */
+        .time-input-container { display: flex; align-items: center; border-bottom: 2px solid #06b6d4; transition: border-color 0.3s; padding-bottom: 2px;}
+        .time-input-container:focus-within { border-bottom: 2px solid #22d3ee; }
+        .time-input { background: transparent; border: none; color: #ffffff; text-align: center; font-family: monospace; font-weight: bold; font-size: 1.2rem; width: 32px; outline: none; }
+
+        .glass-card {
+            background: linear-gradient(135deg, rgba(30, 41, 59, 0.6), rgba(15, 23, 42, 0.8));
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(6, 182, 212, 0.2);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+        .glass-card:active { transform: scale(0.97); border-color: rgba(6, 182, 212, 0.5); }
+
+        .text-shadow-lg { text-shadow: 0 4px 12px rgba(0,0,0,0.8); }
+        .text-glow-cyan { text-shadow: 0 0 15px rgba(34, 211, 238, 0.6); }
+
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+
+    <!-- Standardní PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0f172a">
+    <link rel="apple-touch-icon" href="icon-512.png">
+
+    <script>
+        if ('serviceWorker' in navigator && window.location.protocol.startsWith('http')) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js').then(registration => {
+                    console.log('ServiceWorker běží úspěšně (scope: ' + registration.scope + ')');
+                }).catch(error => {
+                    console.error('ServiceWorker registrace selhala:', error);
+                });
+            });
+        }
+    </script>
+</head>
+<body class="text-white font-sans select-none">
+
+<div id="flashLayer" class="flash-overlay"></div>
+
+<div id="toastNotif" class="fixed top-16 left-1/2 transform -translate-x-1/2 bg-cyan-600 text-slate-900 px-4 py-2 rounded-full font-bold shadow-lg opacity-0 pointer-events-none transition-opacity duration-300 z-[200]">
+    Zkopírováno do schránky!
+</div>
+
+<!-- HLAVNÍ HEADER -->
+<div class="px-3 py-2 flex justify-between items-center bg-slate-900 border-b border-slate-800 z-30 shrink-0 shadow-md">
+    <div class="flex items-center gap-1.5">
+        <button id="btnOpenHistory" aria-label="Otevřít historii" class="text-cyan-400 text-lg p-1.5 active:scale-90 transition-transform">
+            <i class="fas fa-bars"></i>
+        </button>
+        <button id="btnOpenSettings" aria-label="Otevřít nastavení" class="text-cyan-400 text-base p-1.5 active:scale-90 transition-transform">
+            <i class="fas fa-cog"></i>
+        </button>
+        <h1 class="text-xl font-black tracking-tighter italic ml-1">XEBEX <span class="text-cyan-400 text-glow-cyan">AI</span><span class="text-[10px] text-slate-500 ml-2 font-normal not-italic tracking-normal">v5.0</span></h1>
+
+        <button id="btnInstallPwa" class="hidden bg-cyan-600 text-slate-900 px-2 py-1 rounded text-[10px] font-bold shadow-md ml-1 active:scale-95">
+            <i class="fas fa-download mr-1"></i> Instalovat
+        </button>
+    </div>
+    <div class="flex gap-2 items-center">
+        <button id="soundToggle" aria-label="Přepnout zvuk" class="px-2.5 py-1 rounded-full bg-cyan-600 text-slate-900 text-[9px] font-black uppercase shadow-[0_0_10px_rgba(6,182,212,0.5)] border border-cyan-400 transition-all active:scale-95">🔊 ZAP</button>
+        <!-- TLAČÍTKO PRO BLUETOOTH -->
+        <button id="connectionStatus" aria-label="Připojit Bluetooth" class="px-2 py-1 rounded-full text-[9px] font-bold bg-red-950/80 text-red-400 uppercase tracking-widest border border-red-900 flex items-center shadow-inner transition-all duration-300 active:scale-95 cursor-pointer">
+            <i class="fab fa-bluetooth-b mr-1"></i> PŘIPOJIT
+        </button>
+    </div>
+</div>
+
+<!-- NASTAVENÍ PROFILU (Modal) -->
+<div id="settingsModal" class="fixed inset-0 bg-slate-950/90 z-[110] hidden flex-col justify-center items-center p-4">
+    <div class="glass-card rounded-2xl w-full max-w-xs p-6 relative shadow-2xl">
+        <button id="btnCloseSettings" aria-label="Zavřít nastavení" class="absolute top-4 right-4 text-slate-400 hover:text-white text-xl active:scale-90 transition-transform"><i class="fas fa-times"></i></button>
+        <h2 class="text-lg font-black text-cyan-400 uppercase tracking-widest mb-4 flex items-center gap-2"><i class="fas fa-user-cog"></i> Profil</h2>
+
+        <div class="mb-4">
+            <label class="text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1 block">Věk</label>
+            <input type="number" id="inputAge" class="w-full bg-slate-800/50 border border-slate-700 rounded-xl p-3 text-white font-bold focus:border-cyan-400 focus:outline-none">
+        </div>
+        <div class="mb-4">
+            <label class="text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1 block">Váha (kg)</label>
+            <input type="number" id="inputWeight" class="w-full bg-slate-800/50 border border-slate-700 rounded-xl p-3 text-white font-bold focus:border-cyan-400 focus:outline-none">
+        </div>
+        <div class="mb-6">
+            <label class="text-[10px] text-slate-400 uppercase font-bold tracking-wider mb-1 block">Pohlaví</label>
+            <select id="inputGender" class="w-full bg-slate-800/50 border border-slate-700 rounded-xl p-3 text-white font-bold focus:border-cyan-400 focus:outline-none appearance-none">
+                <option value="muž">Muž</option>
+                <option value="žena">Žena</option>
+            </select>
+        </div>
+
+        <button id="btnSaveSettings" class="w-full bg-cyan-600 hover:bg-cyan-500 text-slate-900 text-sm font-black py-3 rounded-xl uppercase tracking-tighter shadow-[0_0_15px_rgba(6,182,212,0.3)] transition-all active:scale-95 mb-4">Uložit</button>
+
+        <div class="pt-4 border-t border-slate-700/50 w-full">
+            <label class="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2 block text-center">Instalace pro Android</label>
+            <a href="/XebexAI.apk" download class="w-full bg-slate-800 hover:bg-slate-700 border border-slate-700 text-green-400 text-xs font-black py-2.5 rounded-xl uppercase tracking-widest shadow-md transition-all active:scale-[0.98] flex justify-center items-center gap-2">
+                <i class="fab fa-android text-lg"></i> Stáhnout .APK
+            </a>
+        </div>
+    </div>
+</div>
+
+<!-- EKRAN HISTORIE -->
+<div id="historyModal" class="fixed inset-0 bg-slate-950 z-[100] transform translate-y-full transition-transform duration-300 flex flex-col">
+    <div class="p-3 bg-slate-900 border-b border-slate-800 flex justify-between items-center shadow-md pb-safe-top">
+        <h2 class="text-base font-black text-cyan-400 uppercase tracking-widest text-glow-cyan">Moje Historie Tréninků</h2>
+        <button id="btnCloseHistory" aria-label="Zavřít historii" class="text-slate-400 hover:text-white text-xl p-2 active:scale-90 transition-transform"><i class="fas fa-times"></i></button>
+    </div>
+    <div id="historyList" class="flex-1 overflow-y-auto p-3 flex flex-col gap-2 pb-safe">
+        <div class="text-center text-slate-500 mt-10"><i class="fas fa-spinner fa-spin text-2xl mb-2"></i><br>Načítám...</div>
+    </div>
+</div>
+
+<!-- ZÁLOŽKA: TRÉNINK -->
+<div id="tabWorkout" class="tab-content active relative flex-1 min-h-0">
+    <div id="mainContainer" class="flex-1 flex flex-col justify-center items-center bg-slate-900 relative w-full transition-colors duration-500 py-1 overflow-y-auto">
+
+        <!-- Ztmavovací vrstva pro pauzu -->
+        <div id="pauseDimmer" class="absolute inset-0 bg-slate-950/80 z-[5] hidden pointer-events-none backdrop-blur-[2px] transition-all duration-500"></div>
+        <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-slate-900/40 pointer-events-none z-0"></div>
+
+        <div class="relative z-10 flex flex-col items-center w-full px-3 mt-1">
+            <h2 id="phaseLabel" class="text-lg font-black uppercase tracking-[0.2em] text-white/70 mb-0 text-shadow-lg transition-all">PŘIPRAVEN</h2>
+            <div id="timerDisplay" class="text-[4.2rem] sm:text-6xl font-mono font-black text-white tracking-tighter text-shadow-lg leading-none mb-1 mt-1 transition-all">00:00</div>
+
+            <div class="w-full max-w-xs h-1 bg-slate-800/80 rounded-full overflow-hidden shadow-inner opacity-0 transition-opacity duration-500" id="progressContainer">
+                <div id="phaseProgressBar" class="h-full bg-cyan-400 transition-all duration-1000 ease-linear w-full shadow-[0_0_8px_rgba(34,211,238,0.8)]"></div>
+            </div>
+        </div>
+
+        <div class="relative z-10 grid grid-cols-2 gap-1.5 w-full max-w-sm px-3 mt-2 mb-2">
+            <div class="glass-card p-1.5 rounded-lg text-center"><div class="text-cyan-400 text-[8px] font-bold uppercase tracking-widest mb-0 opacity-80">TEMPO</div><div id="paceValue" class="text-xl font-black font-mono">--:--</div></div>
+            <div class="glass-card p-1.5 rounded-lg text-center"><div class="text-cyan-400 text-[8px] font-bold uppercase tracking-widest mb-0 opacity-80">WATTY</div><div id="wattsValue" class="text-xl font-black font-mono text-yellow-400 text-shadow-lg">0</div></div>
+            <div class="glass-card p-1.5 rounded-lg text-center"><div class="text-cyan-400 text-[8px] font-bold uppercase tracking-widest mb-0 opacity-80">METRY</div><div id="distValue" class="text-xl font-black font-mono">0</div></div>
+            <div class="glass-card p-1.5 rounded-lg text-center"><div class="text-cyan-400 text-[8px] font-bold uppercase tracking-widest mb-0 opacity-80">SPM</div><div id="spmValue" class="text-xl font-black font-mono text-cyan-200">0</div></div>
+            <div class="glass-card p-1.5 rounded-lg col-span-2 flex justify-between items-center px-4"><span class="text-cyan-400 text-[9px] font-bold uppercase tracking-widest opacity-80">KALORIE</span><span id="calsValue" class="text-xl font-black font-mono text-orange-400">0</span></div>
+        </div>
+    </div>
+
+    <!-- OVLÁDACÍ PANEL -->
+    <div class="bg-slate-900 px-3 pt-2 pb-2 border-t border-slate-800 shrink-0 z-40 shadow-[0_-20px_50px_rgba(0,0,0,0.5)]">
+        <div class="flex justify-center mb-2">
+            <div class="bg-slate-950 p-1 rounded-lg flex w-full max-w-xs border border-slate-800 shadow-inner">
+                <button id="modeManualBtn" class="flex-1 text-[9px] font-bold py-1.5 rounded-md bg-cyan-600 text-slate-900 shadow-md transition-all">MANUAL</button>
+                <button id="modeAutoBtn" class="flex-1 text-[9px] font-bold py-1.5 rounded-md text-slate-400 hover:text-white transition-all">AUTO-DETECT</button>
+            </div>
+        </div>
+
+        <div id="manualControls" class="flex gap-1.5 mb-2 transition-all duration-300 origin-top">
+            <div class="flex-1 glass-card rounded-lg p-1 flex flex-col items-center">
+                <span class="text-[8px] text-red-400 font-bold uppercase tracking-widest mb-1 flex items-center gap-1"><i class="fas fa-fire"></i> Práce</span>
+                <div class="flex items-center justify-between w-full">
+                    <button id="btnWorkMinus" aria-label="Ubrat" class="w-6 h-7 bg-slate-800 rounded-md text-red-400 font-bold text-base flex justify-center items-center active:bg-slate-700 transition-colors shadow-sm">-</button>
+                    <div class="time-input-container">
+                        <input type="number" id="workMin" value="01" min="0" max="99" class="time-input !text-base !w-6" aria-label="Minuty práce">
+                        <span class="text-white font-bold mx-0.5">:</span>
+                        <input type="number" id="workSec" value="00" min="0" max="59" class="time-input !text-base !w-6" aria-label="Sekundy práce">
+                    </div>
+                    <button id="btnWorkPlus" aria-label="Přidat" class="w-6 h-7 bg-slate-800 rounded-md text-red-400 font-bold text-base flex justify-center items-center active:bg-slate-700 transition-colors shadow-sm">+</button>
+                </div>
+            </div>
+            <div class="flex-1 glass-card rounded-lg p-1 flex flex-col items-center">
+                <span class="text-[8px] text-cyan-400 font-bold uppercase tracking-widest mb-1 flex items-center gap-1"><i class="fas fa-bed"></i> Pauza</span>
+                <div class="flex items-center justify-between w-full">
+                    <button id="btnRestMinus" aria-label="Ubrat" class="w-6 h-7 bg-slate-800 rounded-md text-cyan-400 font-bold text-base flex justify-center items-center active:bg-slate-700 transition-colors shadow-sm">-</button>
+                    <div class="time-input-container border-cyan-400">
+                        <input type="number" id="restMin" value="00" min="0" max="99" class="time-input text-cyan-200 !text-base !w-6" aria-label="Minuty pauza">
+                        <span class="text-white font-bold mx-0.5">:</span>
+                        <input type="number" id="restSec" value="30" min="0" max="59" class="time-input text-cyan-200 !text-base !w-6" aria-label="Sekundy pauza">
+                    </div>
+                    <button id="btnRestPlus" aria-label="Přidat" class="w-6 h-7 bg-slate-800 rounded-md text-cyan-400 font-bold text-base flex justify-center items-center active:bg-slate-700 transition-colors shadow-sm">+</button>
+                </div>
+            </div>
+            <!-- SEKCE: SÉRIE -->
+            <div class="flex-1 glass-card rounded-lg p-1 flex flex-col items-center">
+                <span class="text-[8px] text-yellow-400 font-bold uppercase tracking-widest mb-1 flex items-center gap-1"><i class="fas fa-redo"></i> Série</span>
+                <div class="flex items-center justify-between w-full">
+                    <button id="btnSetMinus" aria-label="Ubrat série" class="w-6 h-7 bg-slate-800 rounded-md text-yellow-400 font-bold text-base flex justify-center items-center active:bg-slate-700 transition-colors shadow-sm">-</button>
+                    <div class="time-input-container border-yellow-400">
+                        <input type="number" id="setInput" value="5" min="1" max="99" class="time-input text-yellow-200 !text-base !w-8" aria-label="Počet sérií">
+                    </div>
+                    <button id="btnSetPlus" aria-label="Přidat série" class="w-6 h-7 bg-slate-800 rounded-md text-yellow-400 font-bold text-base flex justify-center items-center active:bg-slate-700 transition-colors shadow-sm">+</button>
+                </div>
+            </div>
+        </div>
+        <!-- TLAČÍTKA: START/STOP A PAUZA -->
+        <div class="flex gap-2">
+            <button id="actionBtn" class="flex-1 bg-cyan-600 hover:bg-cyan-500 text-slate-900 text-sm font-black py-2.5 rounded-xl uppercase tracking-tighter btn-disabled shadow-[0_4px_15px_rgba(6,182,212,0.4)] transition-all transform active:scale-[0.98]">ČEKÁM NA VESLO...</button>
+            <button id="pauseBtn" aria-label="Pozastavit" class="hidden relative w-16 bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-lg flex justify-center items-center rounded-xl shadow-[0_4px_15px_rgba(234,179,8,0.4)] transition-all active:scale-95">
+                <i id="pauseIcon" class="fas fa-pause"></i>
+                <span id="pauseBadge" class="absolute -top-2 -right-2 bg-slate-900 text-yellow-400 text-[10px] font-black px-1.5 py-0.5 rounded-md border border-yellow-500 hidden z-10 shadow-sm"></span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ZÁLOŽKA: VÝSLEDKY A ANALÝZA -->
+<div id="tabAnalysis" class="tab-content bg-slate-950 flex-1 overflow-y-auto min-h-0">
+    <div class="p-3 bg-slate-900 border-b border-slate-800 shrink-0 sticky top-0 z-20 shadow-md flex justify-between items-center">
+        <h2 id="analysisTitle" class="text-sm font-black text-cyan-400 uppercase tracking-widest text-center text-glow-cyan w-full">Výsledek tréninku</h2>
+    </div>
+
+    <div class="grid grid-cols-3 gap-1.5 px-3 py-3 bg-slate-900 border-b border-slate-800 shrink-0">
+        <div class="glass-card rounded-lg p-1.5 text-center">
+            <div class="text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">Celkový čas</div>
+            <div id="statTotalTime" class="text-base font-black text-white">00:00</div>
+        </div>
+        <div class="glass-card rounded-lg p-1.5 text-center">
+            <div class="text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">Vzdálenost</div>
+            <div id="statTotalDist" class="text-base font-black text-white">0 m</div>
+        </div>
+        <div class="glass-card rounded-lg p-1.5 text-center">
+            <div class="text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">Kalorie</div>
+            <div id="statTotalCals" class="text-base font-black text-orange-400">0</div>
+        </div>
+
+        <div class="glass-card rounded-lg p-1.5 text-center mt-1">
+            <div class="text-[8px] text-cyan-400 uppercase font-bold tracking-wider mb-0.5 opacity-80">Prům. Tempo</div>
+            <div id="statAvgPace" class="text-base font-black text-cyan-400">--:--</div>
+        </div>
+        <div class="glass-card rounded-lg p-1.5 text-center mt-1">
+            <div class="text-[8px] text-cyan-400 uppercase font-bold tracking-wider mb-0.5 opacity-80">Prům. Watty</div>
+            <div id="statAvgWatts" class="text-base font-black text-yellow-400">0</div>
+        </div>
+        <div class="glass-card rounded-lg p-1.5 text-center mt-1">
+            <div class="text-[8px] text-cyan-400 uppercase font-bold tracking-wider mb-0.5 opacity-80">Prům. SPM</div>
+            <div id="statAvgSpm" class="text-base font-black text-cyan-200">0</div>
+        </div>
+    </div>
+
+    <div class="h-28 bg-slate-900 p-2 border-b border-slate-800 shrink-0 relative shadow-inner">
+        <div class="h-full w-full"><canvas id="mainChart"></canvas></div>
+    </div>
+
+    <div class="grid grid-cols-3 gap-1.5 p-3 bg-slate-900 border-b border-slate-800 shrink-0 shadow-md">
+        <div class="glass-card rounded-lg p-1.5 text-center">
+            <div class="text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">Konzistence</div>
+            <div id="statConsistency" class="text-sm font-black text-cyan-400">--%</div>
+        </div>
+        <div class="glass-card rounded-lg p-1.5 text-center">
+            <div class="text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">Max Watt</div>
+            <div id="statMaxWatt" class="text-sm font-black text-yellow-400">--</div>
+        </div>
+        <div class="glass-card rounded-lg p-1.5 text-center">
+            <div class="text-[8px] text-slate-400 uppercase font-bold tracking-wider mb-0.5">Výkon na 1h</div>
+            <div id="statFtp" class="text-sm font-black text-white">--W</div>
+        </div>
+    </div>
+
+    <div class="p-3 relative pb-6">
+        <div class="absolute inset-0 bg-gradient-to-b from-cyan-900/10 to-transparent pointer-events-none"></div>
+        <h3 class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1.5 relative z-10">
+            <i class="fas fa-robot text-cyan-500 animate-pulse"></i> AI Hodnocení Trenéra
+        </h3>
+        <div id="aiSummaryBox" class="glass-card rounded-xl p-3 text-slate-200 text-xs leading-relaxed font-medium shadow-inner min-h-[80px] relative z-10 border-l-4 border-l-cyan-500 whitespace-pre-line">
+            Zatím žádná data. Odjeď trénink a já ho zanalyzuji.
+        </div>
+
+        <button id="btnShare" class="w-full mt-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-cyan-400 text-[10px] font-black py-2.5 rounded-xl uppercase tracking-widest shadow-md transition-all active:scale-[0.98] flex justify-center items-center gap-2 relative z-10">
+            <i class="fas fa-share-alt"></i> Sdílet výsledek
+        </button>
+    </div>
+</div>
+
+<!-- Spodní menu -->
+<div class="h-[55px] bg-slate-950 border-t border-slate-800 flex justify-around items-center shrink-0 z-50 shadow-[0_-5px_20px_rgba(0,0,0,0.5)] pb-safe">
+    <button id="navWorkout" aria-label="Záložka Trénink" class="flex flex-col items-center text-cyan-400 w-1/2 h-full justify-center transition-all border-t-4 border-cyan-400 bg-slate-900/50">
+        <i class="fas fa-rowing text-base mb-0.5"></i>
+        <span class="text-[9px] font-black uppercase tracking-wider">Trénink</span>
+    </button>
+    <button id="navAnalysis" aria-label="Záložka Výsledky" class="flex flex-col items-center text-slate-500 hover:text-slate-300 w-1/2 h-full justify-center transition-all border-t-4 border-transparent">
+        <i class="fas fa-clipboard-check text-base mb-0.5"></i>
+        <span class="text-[9px] font-bold uppercase tracking-wider">Výsledky</span>
+    </button>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+    import { getFirestore, collection, addDoc, updateDoc, doc, serverTimestamp, query, where, getDocs } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
+    import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-functions.js";
+
+    const firebaseConfig = { apiKey: "AIzaSyDoCu1TpTBUZbVxcsc3CoRITzAsEZ87F_M", authDomain: "rower-20172.firebaseapp.com", projectId: "rower-20172", storageBucket: "rower-20172.firebasestorage.app", messagingSenderId: "361408383747", appId: "1:361408383747:web:4f1cc7debe099b53d83736", measurementId: "G-S64ZEYN2G2" };
+
+    let db;
+    let functions;
+    try {
+        const app = initializeApp(firebaseConfig);
+        db = getFirestore(app);
+        functions = getFunctions(app);
+    } catch (e) { console.error("Firebase inicializace selhala", e); }
+
+    // --- GLOBÁLNÍ STAV & DEVICE ID ---
+    let deviceId = localStorage.getItem('x_device_id');
+    if (!deviceId) {
+        deviceId = 'dev_' + Math.random().toString(36).substring(2, 10) + '_' + Date.now();
+        localStorage.setItem('x_device_id', deviceId);
+    }
+
+    const AUTO_WORK_THRESHOLD_WATTS = 80;
+    const AUTO_REST_THRESHOLD_WATTS = 50;
+    let workoutMode = 'manual';
+    let phaseTimeElapsed = 0;
+    let phaseTotalDuration = 0;
+
+    let mainChart = null;
+    let sessionStats = { totalWorkTime: 0, maxWatts: 0, historyLog: [], intervals: [] };
+    let currentRowerData = { watts: 0, spm: 0, pace: 0, distance: 0, calories: 0 };
+    let isRunning = false, isWorkPhase = true, isConnected = false, isDemoMode = false, soundEnabled = true, timerInterval = null, timeLeft = 0, audioCtx = null;
+    let demoIntervalId = null;
+    let wakeLock = null;
+    let cachedWorkouts = {};
+
+    let phaseRealStartTimeMs = 0;
+    let workoutRealStartTimeMs = 0;
+    let lastLoggedSecond = -1;
+    let currentPhaseStartLoggedSec = 0;
+
+    let targetSets = 1;
+    let currentSet = 1;
+    let isPaused = false;
+    let pauseStartTimeMs = 0;
+    let isWaitingForStroke = false;
+
+    let startDistanceOffset = 0;
+    let startCaloriesOffset = 0;
+
+    let deferredPrompt;
+    let activeBluetoothCharacteristic = null;
+
+    const uiElements = {
+        watts: document.getElementById('wattsValue'),
+        pace: document.getElementById('paceValue'),
+        dist: document.getElementById('distValue'),
+        spm: document.getElementById('spmValue'),
+        cals: document.getElementById('calsValue')
+    };
+
+    // --- CHYTRÉ CHYTÁNÍ CHYB AI S MANUÁLNÍM FALLBACKEM ---
+    async function saveWorkoutAndGetSummary(stats, isDemo = false) {
+        if (!db) return;
+
+        let docRef = null;
+        try {
+            docRef = await addDoc(collection(db, "workouts"), {
+                ...stats,
+                deviceId: deviceId,
+                timestamp: serverTimestamp(),
+                device: "Android App v5.0",
+                isDemo: isDemo
+            });
+        } catch(e) {
+            console.error("Chyba při ukládání do db:", e);
+            document.getElementById('aiSummaryBox').innerHTML = `<span class="text-red-400">Nepodařilo se uložit trénink do databáze.</span>`;
+            return;
+        }
+
+        const summaryBox = document.getElementById('aiSummaryBox');
+        summaryBox.innerHTML = '<div class="flex items-center justify-center gap-2 text-cyan-400 animate-pulse py-2"><i class="fas fa-spinner fa-spin text-xl"></i> <span class="font-bold text-xs">Trenér analyzuje data...</span></div>';
+
+        const aiData = {
+            cas: stats.durationSeconds,
+            vzdalenost: Math.floor(stats.totalDistance || 0),
+            prum_watty: stats.avgWatts,
+            prum_spm: stats.avgSpm,
+            intervaly: (stats.intervals || []).slice(0, 15).map(i => `${i.type === 'work' ? 'Práce' : 'Pauza'}: ${i.duration}s ${i.avgWatts}W`),
+            profil: { vuzrast: localStorage.getItem('user_age') || 'neuvedeno', teglo: localStorage.getItem('user_weight') || 'neuvedeno', pol: localStorage.getItem('user_gender') || 'neuvedeno' }
+        };
+
+        try {
+            const analyzeWorkout = httpsCallable(functions, 'analyzeWorkout');
+            const result = await analyzeWorkout({ stats: aiData, deviceId: deviceId });
+            const summaryText = result.data.summary;
+
+            if (!summaryText) throw new Error("Prázdná odpověď.");
+
+            await updateDoc(doc(db, "workouts", docRef.id), { ai_summary: summaryText });
+            summaryBox.innerText = summaryText;
+            if (cachedWorkouts[docRef.id]) cachedWorkouts[docRef.id].ai_summary = summaryText;
+
+        } catch (functionError) {
+            console.error("AI výpadek:", functionError);
+
+            let errorReason = "Všechny AI modely jsou aktuálně přetížené.";
+            if (functionError.code === 'resource-exhausted' || functionError.message?.includes('limit')) {
+                errorReason = "Vyčerpal jsi limit 30 AI analýz na den. Zkus to zítra.";
+            }
+
+            summaryBox.innerHTML = `
+                <div class="text-left w-full pb-1">
+                    <span class="text-red-400 font-bold block mb-1 text-xs"><i class="fas fa-exclamation-triangle"></i> ${errorReason}</span>
+                    <p class="text-slate-400 text-[10px] mb-2">Hodnocení z jiného modelu (např. ChatGPT) si můžeš zkopírovat a vložit sem:</p>
+                    <textarea id="manualAiInput" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-white text-xs focus:border-cyan-400 outline-none" rows="3" placeholder="Zde vlož text hodnocení..."></textarea>
+                    <button id="saveManualAiBtn" class="mt-2 w-full bg-slate-800 hover:bg-slate-700 border border-slate-600 text-cyan-400 font-bold py-2 rounded-lg uppercase tracking-widest text-[10px] transition-all">Uložit k tréninku</button>
+                </div>
+            `;
+
+            document.getElementById('saveManualAiBtn').addEventListener('click', async () => {
+                const manualText = document.getElementById('manualAiInput').value.trim();
+                if (!manualText) return;
+                const btn = document.getElementById('saveManualAiBtn');
+                btn.innerText = "Ukládám...";
+                try {
+                    await updateDoc(doc(db, "workouts", docRef.id), { ai_summary: manualText });
+                    summaryBox.innerHTML = `<div class="text-slate-200 text-xs leading-relaxed font-medium whitespace-pre-line">${manualText}</div>`;
+                    if (cachedWorkouts[docRef.id]) cachedWorkouts[docRef.id].ai_summary = manualText;
+                } catch (err) {
+                    alert("Chyba uložení: " + err.message);
+                    btn.innerText = "Zkusit znovu";
+                }
+            });
+        }
+    }
+
+    async function fetchHistoryData() {
+        if (!db) return;
+        const listEl = document.getElementById('historyList');
+        listEl.innerHTML = '<div class="text-center text-cyan-400 mt-10"><i class="fas fa-circle-notch fa-spin text-3xl mb-3"></i><br>Hledám v databázi...</div>';
+
+        try {
+            const q = query(collection(db, "workouts"), where("deviceId", "==", deviceId));
+            const querySnapshot = await getDocs(q);
+
+            let allWorkouts = [];
+            cachedWorkouts = {};
+
+            querySnapshot.forEach((docSnap) => {
+                allWorkouts.push({ id: docSnap.id, ...docSnap.data() });
+            });
+
+            allWorkouts.sort((a, b) => {
+                const timeA = a.timestamp ? a.timestamp.toMillis() : 0;
+                const timeB = b.timestamp ? b.timestamp.toMillis() : 0;
+                return timeB - timeA;
+            });
+
+            allWorkouts = allWorkouts.slice(0, 20);
+            listEl.innerHTML = '';
+
+            if (allWorkouts.length === 0) {
+                listEl.innerHTML = '<div class="text-center text-slate-500 mt-10"><i class="fas fa-box-open text-3xl mb-2"></i><br>Zatím žádné uložené tréninky.</div>';
+                return;
+            }
+
+            allWorkouts.forEach((data) => {
+                cachedWorkouts[data.id] = data;
+
+                let dateStr = "Neznámé datum";
+                if (data.timestamp) {
+                    const d = data.timestamp.toDate();
+                    dateStr = d.toLocaleDateString('cs-CZ') + ' ' + d.toLocaleTimeString('cs-CZ', {hour: '2-digit', minute:'2-digit'});
+                }
+
+                const dist = Math.floor(data.totalDistance || 0);
+                const time = formatPaceTime(data.durationSeconds || 0);
+                const watts = data.avgWatts || 0;
+                const isDemo = data.isDemo ? '<span class="text-[8px] bg-cyan-900 text-cyan-200 px-1.5 py-0.5 rounded ml-2 uppercase">Demo</span>' : '';
+
+                const card = document.createElement('div');
+                card.className = "glass-card rounded-xl p-3 flex justify-between items-center cursor-pointer hover:border-cyan-400 transition-colors";
+                card.onclick = () => loadPastWorkout(data.id, dateStr);
+                card.innerHTML = `
+                    <div>
+                        <div class="text-xs text-slate-400 mb-1 flex items-center"><i class="far fa-calendar-alt mr-1.5"></i> ${dateStr} ${isDemo}</div>
+                        <div class="font-black text-base text-white flex gap-4">
+                            <span><i class="fas fa-stopwatch text-cyan-500 text-xs"></i> ${time}</span>
+                            <span><i class="fas fa-ruler-horizontal text-cyan-500 text-xs"></i> ${dist}m</span>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-[9px] text-yellow-400 uppercase font-bold tracking-wider">Prům.</div>
+                        <div class="text-lg font-black text-yellow-400">${watts}W</div>
+                    </div>
+                `;
+                listEl.appendChild(card);
+            });
+        } catch (e) {
+            console.error("Chyba při načítání historie:", e);
+            listEl.innerHTML = '<div class="text-center text-red-400 mt-10"><i class="fas fa-exclamation-triangle text-2xl mb-2"></i><br>Nepodařilo se načíst historii.</div>';
+        }
+    }
+
+    function loadPastWorkout(id, dateStr) {
+        const data = cachedWorkouts[id];
+        if (!data) return;
+
+        toggleHistory();
+        document.getElementById('analysisTitle').innerText = "Trénink z " + dateStr;
+        calculateAndDisplayStats(data);
+
+        const summaryBox = document.getElementById('aiSummaryBox');
+        if (data.ai_summary) {
+            summaryBox.innerText = data.ai_summary;
+        } else {
+            summaryBox.innerHTML = '<span class="text-slate-500 italic">AI analýza k tomuto staršímu tréninku nebyla nalezena.</span>';
+        }
+        switchTab('analysis');
+    }
+
+    function showToastMsg(msg, isError = false) {
+        const t = document.getElementById('toastNotif');
+        t.innerText = msg;
+        if (isError) {
+            t.classList.remove('bg-cyan-600', 'text-slate-900');
+            t.classList.add('bg-red-600', 'text-white');
+        } else {
+            t.classList.add('bg-cyan-600', 'text-slate-900');
+            t.classList.remove('bg-red-600', 'text-white');
+        }
+        t.classList.remove('opacity-0');
+        setTimeout(() => t.classList.add('opacity-0'), 3000);
+    }
+
+    async function handleShareResult() {
+        const time = document.getElementById('statTotalTime').innerText;
+        const dist = document.getElementById('statTotalDist').innerText;
+        const watts = document.getElementById('statAvgWatts').innerText;
+        const textToShare = `Můj Xebex AI výsledek: ${time}, ${dist}, Průměr: ${watts}.`;
+
+        if (navigator.share) {
+            try { await navigator.share({ title: 'Xebex AI Výsledek', text: textToShare }); } catch(e) {}
+        } else {
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(textToShare);
+                    showToastMsg("Zkopírováno do schránky!");
+                } else {
+                    const el = document.createElement('textarea');
+                    el.value = textToShare;
+                    document.body.appendChild(el);
+                    el.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(el);
+                    showToastMsg("Zkopírováno do schránky!");
+                }
+            } catch(e) {
+                showToastMsg("Chyba při kopírování", true);
+            }
+        }
+    }
+
+    function loadProfileSettings() {
+        document.getElementById('inputAge').value = localStorage.getItem('user_age') || '';
+        document.getElementById('inputWeight').value = localStorage.getItem('user_weight') || '';
+        document.getElementById('inputGender').value = localStorage.getItem('user_gender') || 'muž';
+    }
+
+    function saveProfileSettings() {
+        localStorage.setItem('user_age', document.getElementById('inputAge').value);
+        localStorage.setItem('user_weight', document.getElementById('inputWeight').value);
+        localStorage.setItem('user_gender', document.getElementById('inputGender').value);
+        document.getElementById('settingsModal').classList.add('hidden');
+        document.getElementById('settingsModal').classList.remove('flex');
+    }
+
+    function toggleSettings() {
+        const modal = document.getElementById('settingsModal');
+        if (modal.classList.contains('hidden')) {
+            loadProfileSettings();
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        } else {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+    }
+
+    function toggleHistory() {
+        const modal = document.getElementById('historyModal');
+        const isHidden = modal.classList.contains('translate-y-full');
+        if (isHidden) {
+            modal.classList.remove('translate-y-full');
+            fetchHistoryData();
+        } else {
+            modal.classList.add('translate-y-full');
+        }
+    }
+
+    async function requestWakeLock() {
+        try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); }
+        catch (err) { console.log("Wake Lock chyba: ", err); }
+    }
+
+    function releaseWakeLock() {
+        if (wakeLock !== null) { wakeLock.release(); wakeLock = null; }
+    }
+
+    function setMode(mode) {
+        workoutMode = mode;
+        const manualBtn = document.getElementById('modeManualBtn');
+        const autoBtn = document.getElementById('modeAutoBtn');
+        const manualControls = document.getElementById('manualControls');
+
+        if(mode === 'manual') {
+            manualBtn.className = "flex-1 text-[9px] font-bold py-1.5 rounded-md bg-cyan-600 text-slate-900 shadow-md transition-all";
+            autoBtn.className = "flex-1 text-[9px] font-bold py-1.5 rounded-md text-slate-400 hover:text-white transition-all";
+            manualControls.style.display = 'flex';
+            document.getElementById('progressContainer').classList.remove('opacity-0');
+        } else {
+            autoBtn.className = "flex-1 text-[9px] font-bold py-1.5 rounded-md bg-cyan-600 text-slate-900 shadow-md transition-all";
+            manualBtn.className = "flex-1 text-[9px] font-bold py-1.5 rounded-md text-slate-400 hover:text-white transition-all";
+            manualControls.style.display = 'none';
+            document.getElementById('progressContainer').classList.add('opacity-0');
+        }
+    }
+
+    function initAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); }
+
+    function toggleSound() {
+        soundEnabled = !soundEnabled;
+        initAudio();
+        const btn = document.getElementById('soundToggle');
+        if (soundEnabled) {
+            btn.innerText = "🔊 ZAP";
+            btn.className = "px-2.5 py-1 rounded-full bg-cyan-600 text-slate-900 text-[9px] font-black uppercase shadow-[0_0_10px_rgba(6,182,212,0.5)] border border-cyan-400 transition-all active:scale-95";
+            playTone(800, 0.1);
+        } else {
+            btn.innerText = "🔇 VYP";
+            btn.className = "px-2.5 py-1 rounded-full bg-slate-800 text-slate-500 text-[9px] font-bold uppercase border border-slate-700 transition-all active:scale-95";
+        }
+    }
+
+    function playTone(freq, dur, type='square') {
+        if (!soundEnabled || !audioCtx) return;
+        try {
+            const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+            o.type = type; o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination);
+            o.start(); g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+            o.stop(audioCtx.currentTime + dur);
+        } catch(e) {}
+    }
+
+    function initChart() {
+        const ctx = document.getElementById('mainChart').getContext('2d');
+        mainChart = new Chart(ctx, {
+            type: 'bar',
+            data: { labels: [], datasets: [{ label: 'Průměrné Watty', data: [], backgroundColor: 'rgba(34, 211, 238, 0.8)', borderColor: '#22d3ee', borderWidth: 1, borderRadius: 4, borderSkipped: false }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, tooltip: { callbacks: { label: function(context) { return context.parsed.y + ' W'; } } } }, scales: { x: { display: true, grid: { display: false }, ticks: { color: '#64748b', font: {size: 10, family: 'sans-serif'} } }, y: { beginAtZero: true, grid: { color: 'rgba(30, 41, 59, 0.5)', borderDash: [5, 5] }, ticks: { color: '#64748b', font: {size: 10, family: 'monospace'} } } }, animation: { duration: 800, easing: 'easeOutQuart' } }
+        });
+    }
+
+    function updateChart(labels, data) { if(!mainChart) return; mainChart.data.labels = labels; mainChart.data.datasets[0].data = data; mainChart.update(); }
+
+    function formatPaceTime(seconds) {
+        if (!seconds || isNaN(seconds) || seconds <= 0 || seconds > 3600) return "--:--";
+        let mins = Math.floor(seconds / 60);
+        let secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function calculateAndDisplayStats(data) {
+        document.getElementById('statTotalTime').innerText = formatPaceTime(data.durationSeconds);
+        document.getElementById('statTotalDist').innerText = Math.floor(data.totalDistance || 0) + " m";
+        document.getElementById('statTotalCals').innerText = Math.floor(data.totalCalories || 0);
+        document.getElementById('statAvgWatts').innerText = (data.avgWatts && data.avgWatts > 0) ? data.avgWatts + " W" : "0 W";
+        document.getElementById('statAvgSpm').innerText = (data.avgSpm && data.avgSpm > 0) ? data.avgSpm : "0";
+        document.getElementById('statAvgPace').innerText = formatPaceTime(data.avgPace);
+
+        const workIntervals = (data.intervals || []).filter(i => i.type === 'work');
+        if (workIntervals.length > 0) {
+            const dataPoints = workIntervals.map(i => i.avgWatts);
+            const labels = workIntervals.map((_, index) => `Int ${index + 1}`);
+            updateChart(labels, dataPoints);
+            const avg = dataPoints.reduce((a,b)=>a+b,0) / dataPoints.length;
+            const variance = dataPoints.reduce((a,b)=>a+Math.pow(b-avg, 2),0) / dataPoints.length;
+            const score = Math.max(0, 100 - Math.round(Math.sqrt(variance)));
+            document.getElementById('statConsistency').innerText = score + "%";
+        } else {
+            document.getElementById('statConsistency').innerText = "0%";
+            const workData = (data.historyLog || []).filter(h => h.phase === 'work');
+            if(workData.length > 0) { updateChart(workData.map(h => h.t), workData.map(h => h.w)); } else { updateChart([], []); }
+        }
+
+        const allWatts = (data.historyLog || []).map(h => h.w);
+        const max = allWatts.length > 0 ? Math.max(...allWatts, 0) : (data.maxWatts || 0);
+        document.getElementById('statMaxWatt').innerText = max;
+        document.getElementById('statFtp').innerText = Math.round(max * 0.75) + "W";
+    }
+
+    function processIntervalEnd() {
+        const duration = sessionStats.totalWorkTime - currentPhaseStartLoggedSec;
+        if (duration <= 0) return;
+        const phaseData = sessionStats.historyLog.filter(h => h.t > currentPhaseStartLoggedSec && h.t <= sessionStats.totalWorkTime);
+        const sumW = phaseData.reduce((sum, h) => sum + (h.w || 0), 0);
+        const sumS = phaseData.reduce((sum, h) => sum + (h.s || 0), 0);
+        sessionStats.intervals.push({ type: isWorkPhase ? 'work' : 'rest', duration: duration, avgWatts: Math.round(sumW / (phaseData.length || 1)), avgSpm: Math.round(sumS / (phaseData.length || 1)) });
+        currentPhaseStartLoggedSec = sessionStats.totalWorkTime;
+    }
+
+    window.formatTimeInput = function(el, isSet = false) {
+        let val = parseInt(el.value) || 0;
+        if (isSet) {
+            if (val < 1) val = 1;
+            if (val > 99) val = 99;
+            el.value = val;
+        } else {
+            if (el.id.includes('Sec') && val > 59) val = 59;
+            if (val < 0) val = 0;
+            el.value = val.toString().padStart(2, '0');
+        }
+        saveSettings();
+    };
+
+    function getSecondsFromInputs(type) {
+        const m = parseInt(document.getElementById(type + 'Min').value) || 0;
+        const s = parseInt(document.getElementById(type + 'Sec').value) || 0;
+        return (m * 60) + s;
+    }
+
+    function setInputsFromSeconds(type, totalSeconds) {
+        const m = Math.floor(totalSeconds / 60);
+        const s = totalSeconds % 60;
+        document.getElementById(type + 'Min').value = m.toString().padStart(2, '0');
+        document.getElementById(type + 'Sec').value = s.toString().padStart(2, '0');
+    }
+
+    function adjustTime(type, valSec) {
+        let current = getSecondsFromInputs(type);
+        current += valSec;
+        if (current < 5) current = 5; // Minimum 5 sekund
+        setInputsFromSeconds(type, current);
+        saveSettings();
+    }
+
+    function saveSettings() {
+        localStorage.setItem('x_work', getSecondsFromInputs('work'));
+        localStorage.setItem('x_rest', getSecondsFromInputs('rest'));
+        localStorage.setItem('x_sets', document.getElementById('setInput').value);
+    }
+
+    function loadSettings() {
+        const w = localStorage.getItem('x_work');
+        if(w) setInputsFromSeconds('work', parseInt(w));
+        const r = localStorage.getItem('x_rest');
+        if(r) setInputsFromSeconds('rest', parseInt(r));
+        const s = localStorage.getItem('x_sets');
+        if(s) document.getElementById('setInput').value = s;
+    }
+
+    function switchTab(tab) {
+        document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+        document.getElementById(tab === 'workout' ? 'tabWorkout' : 'tabAnalysis').classList.add('active');
+        const active = "text-cyan-400 border-t-4 border-cyan-400 bg-slate-900/50", inactive = "text-slate-500 hover:text-slate-300 border-t-4 border-transparent bg-transparent";
+        document.getElementById('navWorkout').className = `flex flex-col items-center w-1/2 h-full justify-center transition-all ${tab === 'workout' ? active : inactive}`;
+        document.getElementById('navAnalysis').className = `flex flex-col items-center w-1/2 h-full justify-center transition-all ${tab === 'analysis' ? active : inactive}`;
+    }
+
+    function resetUI() {
+        if(uiElements.watts) uiElements.watts.innerText = "0";
+        if(uiElements.pace) uiElements.pace.innerText = "--:--";
+        if(uiElements.dist) uiElements.dist.innerText = "0";
+        if(uiElements.spm) uiElements.spm.innerText = "0";
+        if(uiElements.cals) uiElements.cals.innerText = "0";
+        currentRowerData = { watts: 0, spm: 0, pace: 0, distance: 0, calories: 0 };
+        sessionStats = { totalWorkTime: 0, maxWatts: 0, historyLog: [], intervals: [] };
+
+        phaseRealStartTimeMs = 0;
+        workoutRealStartTimeMs = 0;
+        lastLoggedSecond = -1;
+        currentPhaseStartLoggedSec = 0;
+        isPaused = false;
+        isWaitingForStroke = false;
+
+        startDistanceOffset = 0;
+        startCaloriesOffset = 0;
+
+        phaseTimeElapsed = 0;
+
+        document.getElementById('phaseProgressBar').style.width = '100%';
+        document.getElementById('phaseProgressBar').className = "h-full bg-slate-600 transition-all duration-1000 ease-linear w-full";
+        document.getElementById('timerDisplay').innerText = "00:00";
+        document.getElementById('timerDisplay').classList.remove('opacity-50');
+
+        document.getElementById('analysisTitle').innerText = "Výsledek tréninku";
+
+        document.getElementById('pauseBtn').classList.add('hidden');
+        document.getElementById('pauseBadge').classList.add('hidden');
+        document.getElementById('pauseDimmer').classList.add('hidden');
+
+        const lbl = document.getElementById('phaseLabel');
+        lbl.innerHTML = "PŘIPRAVEN";
+    }
+
+    function togglePause() {
+        if (!isRunning || isWaitingForStroke) return;
+
+        if (isPaused) {
+            isPaused = false;
+            const pauseDuration = Date.now() - pauseStartTimeMs;
+            workoutRealStartTimeMs += pauseDuration;
+            phaseRealStartTimeMs += pauseDuration;
+
+            document.getElementById('pauseIcon').className = "fas fa-pause";
+            document.getElementById('pauseBtn').className = "relative w-16 bg-yellow-500 hover:bg-yellow-400 text-slate-900 text-lg flex justify-center items-center rounded-xl shadow-[0_4px_15px_rgba(234,179,8,0.4)] transition-all active:scale-95";
+            document.getElementById('actionBtn').innerText = "UKONČIT A ULOŽIT";
+            document.getElementById('pauseDimmer').classList.add('hidden');
+            updateUI();
+        } else {
+            isPaused = true;
+            pauseStartTimeMs = Date.now();
+
+            document.getElementById('pauseIcon').className = "fas fa-play";
+            document.getElementById('pauseBtn').className = "relative w-16 bg-green-500 hover:bg-green-400 text-slate-900 text-lg flex justify-center items-center rounded-xl shadow-[0_4px_15px_rgba(34,197,94,0.4)] transition-all active:scale-95";
+            document.getElementById('actionBtn').innerText = "UKONČIT (PAUZA)";
+            document.getElementById('phaseLabel').innerText = "POZASTAVENO";
+            document.getElementById('pauseDimmer').classList.remove('hidden');
+        }
+    }
+
+    function forceStartPhase() {
+        isWaitingForStroke = false;
+        workoutRealStartTimeMs = Date.now();
+        phaseRealStartTimeMs = Date.now();
+        lastLoggedSecond = -1;
+
+        startDistanceOffset = currentRowerData.distance;
+        startCaloriesOffset = currentRowerData.calories;
+
+        const btn = document.getElementById('actionBtn');
+        btn.innerText = "UKONČIT A ULOŽIT";
+        btn.className = "flex-1 bg-red-600 hover:bg-red-500 text-white text-sm font-black py-2.5 rounded-xl uppercase tracking-tighter shadow-[0_4px_15px_rgba(220,38,38,0.4)] transition-all";
+        btn.classList.remove('animate-pulse');
+
+        document.getElementById('pauseBtn').classList.remove('hidden');
+        document.getElementById('timerDisplay').classList.remove('opacity-50');
+
+        updateUI();
+        triggerFlash();
+        playTone(800, 0.6);
+    }
+
+    function toggleWorkout() {
+        if(!audioCtx) initAudio();
+        if(!isConnected && !isDemoMode) return;
+
+        if (isRunning) {
+            if (isWaitingForStroke) {
+                forceStartPhase();
+            } else {
+                processIntervalEnd();
+                stopWorkout();
+            }
+        } else {
+            startWorkout();
+        }
+    }
+
+    function startWorkout() {
+        resetUI();
+        requestWakeLock();
+        const workTime = getSecondsFromInputs('work');
+        targetSets = parseInt(document.getElementById('setInput').value) || 1;
+        currentSet = 1;
+
+        isRunning = true;
+        isWorkPhase = true;
+        timeLeft = workTime;
+        phaseTotalDuration = workTime;
+        phaseTimeElapsed = 0;
+
+        isWaitingForStroke = true;
+
+        const btn = document.getElementById('actionBtn');
+        btn.innerText = "ZATÁHNĚTE (NEBO KLIKNĚTE)";
+        btn.className = "flex-1 bg-yellow-600 hover:bg-yellow-500 text-white text-sm font-black py-2.5 rounded-xl uppercase tracking-tighter shadow-[0_4px_15px_rgba(202,138,4,0.4)] transition-all animate-pulse";
+
+        document.getElementById('pauseBtn').classList.add('hidden');
+
+        const lbl = document.getElementById('phaseLabel');
+        lbl.innerText = "PŘIPRAV SE";
+        lbl.className = "relative z-10 text-lg font-black text-center uppercase mb-0 tracking-[0.2em] text-yellow-400 text-shadow-lg transition-colors";
+
+        let initialTime = workoutMode === 'manual' ? workTime : 0;
+        document.getElementById('timerDisplay').innerText = `${Math.floor(initialTime / 60).toString().padStart(2,'0')}:${(initialTime % 60).toString().padStart(2,'0')}`;
+        document.getElementById('timerDisplay').classList.add('opacity-50');
+
+        let frozenWatts = currentRowerData.watts;
+
+        timerInterval = setInterval(() => {
+            if (isWaitingForStroke) {
+                if ((currentRowerData.watts > 0 && currentRowerData.watts !== frozenWatts) || currentRowerData.watts > frozenWatts) {
+                    forceStartPhase();
+                }
+                frozenWatts = currentRowerData.watts;
+                return;
+            }
+
+            if (isPaused) return;
+
+            const now = Date.now();
+            sessionStats.totalWorkTime = Math.floor((now - workoutRealStartTimeMs) / 1000);
+
+            if (sessionStats.totalWorkTime > lastLoggedSecond) {
+                lastLoggedSecond = sessionStats.totalWorkTime;
+                sessionStats.historyLog.push({ t: sessionStats.totalWorkTime, w: currentRowerData.watts, s: currentRowerData.spm, phase: isWorkPhase ? 'work' : 'rest' });
+            }
+
+            if (workoutMode === 'manual') {
+                const elapsedInPhase = Math.floor((now - phaseRealStartTimeMs) / 1000);
+                timeLeft = phaseTotalDuration - elapsedInPhase;
+
+                if (timeLeft <= 3 && timeLeft > 0 && elapsedInPhase !== lastLoggedSecond) playTone(600, 0.1);
+
+                if (timeLeft <= 0) {
+                    processIntervalEnd();
+
+                    if (isWorkPhase && currentSet >= targetSets) {
+                        stopWorkout();
+                    } else {
+                        if (!isWorkPhase) currentSet++;
+                        switchPhase();
+                    }
+                } else {
+                    updateTimerDisplay(timeLeft);
+                }
+            } else {
+                phaseTimeElapsed = Math.floor((now - phaseRealStartTimeMs) / 1000);
+
+                if (isWorkPhase && currentRowerData.spm < 10) {
+                    processIntervalEnd(); isWorkPhase = false; phaseRealStartTimeMs = Date.now(); phaseTimeElapsed = 0; triggerFlash(); playTone(300, 0.6); updateUI();
+                } else if (!isWorkPhase && currentRowerData.watts >= AUTO_WORK_THRESHOLD_WATTS) {
+                    processIntervalEnd(); isWorkPhase = true; phaseRealStartTimeMs = Date.now(); phaseTimeElapsed = 0; triggerFlash(); playTone(880, 0.6); updateUI();
+                } else if (!isWorkPhase && currentRowerData.watts === 0 && currentRowerData.spm === 0 && phaseTimeElapsed >= 60) {
+                    processIntervalEnd();
+                    stopWorkout();
+                    return;
+                }
+                updateTimerDisplay(phaseTimeElapsed);
+            }
+        }, 250);
+    }
+
+    function stopWorkout() {
+        isRunning = false;
+        isWaitingForStroke = false;
+        clearInterval(timerInterval);
+        playTone(400, 0.4);
+
+        if (navigator.vibrate) {
+            navigator.vibrate([500, 200, 500, 200, 1000]);
+        }
+
+        releaseWakeLock();
+
+        const workLogs = sessionStats.historyLog.filter(h => h.phase === 'work');
+        const workCount = workLogs.length || 1;
+        const overallAvgWatts = Math.round(workLogs.reduce((sum, h) => sum + (h.w || 0), 0) / workCount);
+        const overallAvgSpm = Math.round(workLogs.reduce((sum, h) => sum + (h.s || 0), 0) / workCount);
+        let overallAvgPace = 0;
+        if (currentRowerData.distance > 0) overallAvgPace = Math.round(500 * (sessionStats.totalWorkTime / currentRowerData.distance));
+
+        const workoutData = {
+            durationSeconds: sessionStats.totalWorkTime,
+            totalDistance: Math.max(0, currentRowerData.distance - startDistanceOffset),
+            totalCalories: Math.max(0, currentRowerData.calories - startCaloriesOffset),
+            maxWatts: sessionStats.maxWatts,
+            avgWatts: overallAvgWatts,
+            avgSpm: overallAvgSpm,
+            avgPace: overallAvgPace,
+            historyLog: sessionStats.historyLog,
+            intervals: sessionStats.intervals,
+            mode: workoutMode
+        };
+
+        switchTab('analysis');
+        calculateAndDisplayStats(workoutData);
+        saveWorkoutAndGetSummary(workoutData, isDemoMode);
+
+        const btn = document.getElementById('actionBtn');
+        btn.innerText = "NOVÝ TRÉNINK";
+        btn.className = "flex-1 bg-cyan-600 hover:bg-cyan-500 text-slate-900 text-sm font-black py-2.5 rounded-xl uppercase tracking-tighter shadow-[0_4px_15px_rgba(6,182,212,0.4)] transition-all";
+
+        document.getElementById('pauseBtn').classList.add('hidden');
+        document.getElementById('pauseBadge').classList.add('hidden');
+        document.getElementById('pauseDimmer').classList.add('hidden');
+        document.getElementById('timerDisplay').classList.remove('opacity-50');
+
+        document.getElementById('phaseLabel').innerText = "HOTOVO";
+        document.getElementById('mainContainer').className = "flex-1 flex flex-col justify-center items-center bg-slate-900 relative w-full transition-colors duration-300 py-1 overflow-y-auto";
+    }
+
+    function switchPhase() {
+        isWorkPhase = !isWorkPhase;
+        triggerFlash();
+
+        if (navigator.vibrate) {
+            navigator.vibrate(isWorkPhase ? [300] : [100, 50, 100]);
+        }
+
+        phaseRealStartTimeMs += (phaseTotalDuration * 1000);
+
+        timeLeft = getSecondsFromInputs(isWorkPhase ? 'work' : 'rest');
+        phaseTotalDuration = timeLeft;
+
+        playTone(isWorkPhase ? 880 : 300, 0.6);
+        updateUI();
+    }
+
+    function updateUI() {
+        if (isPaused || isWaitingForStroke) return;
+        const lbl = document.getElementById('phaseLabel');
+
+        let labelText = isWorkPhase ? "MAKEJ!" : "PAUZA";
+        if (workoutMode === 'manual') {
+            labelText += `<div class="text-[10px] text-yellow-400 font-bold tracking-widest mt-1">SÉRIE ${currentSet}/${targetSets}</div>`;
+
+            const badge = document.getElementById('pauseBadge');
+            badge.innerText = `${currentSet}/${targetSets}`;
+            badge.classList.remove('hidden');
+        } else {
+            document.getElementById('pauseBadge').classList.add('hidden');
+        }
+
+        lbl.innerHTML = labelText;
+        lbl.className = `relative z-10 text-lg font-black text-center uppercase mb-0 tracking-[0.2em] text-white text-shadow-lg transition-colors ${isWorkPhase ? 'text-red-400' : 'text-cyan-400'}`;
+
+        document.getElementById('mainContainer').className = `flex-1 flex flex-col justify-center items-center relative w-full transition-colors duration-500 py-1 overflow-y-auto ${isWorkPhase ? 'bg-work' : 'bg-rest'}`;
+        const bar = document.getElementById('phaseProgressBar');
+        bar.className = `h-full transition-all duration-1000 ease-linear w-full shadow-[0_0_8px_rgba(255,255,255,0.5)] ${isWorkPhase ? 'bg-red-500' : 'bg-cyan-400'}`;
+        updateTimerDisplay(workoutMode === 'manual' ? timeLeft : phaseTimeElapsed);
+    }
+
+    function updateTimerDisplay(timeSeconds) {
+        document.getElementById('timerDisplay').innerText = `${Math.floor(timeSeconds / 60).toString().padStart(2,'0')}:${(timeSeconds % 60).toString().padStart(2,'0')}`;
+        if (workoutMode === 'manual' && phaseTotalDuration > 0) {
+            const percentage = (timeSeconds / phaseTotalDuration) * 100;
+            document.getElementById('phaseProgressBar').style.width = `${Math.max(0, percentage)}%`;
+        }
+    }
+
+    function triggerFlash() { const flash = document.getElementById('flashLayer'); flash.classList.add('flash-active'); setTimeout(() => flash.classList.remove('flash-active'), 150); }
+
+    function onBluetoothConnected() { isConnected = true; const el = document.getElementById('connectionStatus'); el.innerHTML = '<i class="fab fa-bluetooth-b mr-1"></i> PŘIPOJENO'; el.className = "px-2 py-1 rounded-full text-[9px] font-bold bg-cyan-600 text-slate-900 border border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)] tracking-widest transition-all cursor-pointer"; document.getElementById('actionBtn').classList.remove('btn-disabled'); document.getElementById('actionBtn').innerText = "START TRÉNINKU"; }
+
+    function onBluetoothDisconnected() {
+        isConnected = false;
+        const el = document.getElementById('connectionStatus');
+        el.innerHTML = '<i class="fab fa-bluetooth-b mr-1"></i> PŘIPOJIT';
+        el.className = "px-2 py-1 rounded-full text-[9px] font-bold bg-red-950/80 text-red-400 border border-red-900 shadow-inner cursor-pointer tracking-widest transition-all active:scale-95";
+
+        if(isRunning) stopWorkout();
+
+        document.getElementById('actionBtn').classList.add('btn-disabled');
+        document.getElementById('actionBtn').innerText = "ČEKÁM NA VESLO...";
+
+        if (activeBluetoothCharacteristic) {
+            activeBluetoothCharacteristic.removeEventListener('characteristicvaluechanged', handleCharacteristicValueChanged);
+            activeBluetoothCharacteristic = null;
+        }
+    }
+
+    function handleCharacteristicValueChanged(event) {
+        if (!isConnected) onBluetoothConnected();
+        const view = event.target.value;
+        if (view.byteLength < 2) return;
+        const flags = view.getUint16(0, true);
+        let offset = 2;
+
+        if (view.byteLength >= offset + 3) {
+            let spm = view.getUint8(offset) / 2;
+            currentRowerData.spm = Math.floor(spm);
+            if(uiElements.spm) uiElements.spm.innerText = currentRowerData.spm;
+            offset += 3;
+        }
+
+        if (flags & (1 << 1)) offset += 1;
+
+        if (flags & (1 << 2)) {
+            let dist = view.getUint8(offset) | (view.getUint8(offset+1) << 8) | (view.getUint8(offset+2) << 16);
+            currentRowerData.distance = dist;
+            if (uiElements.dist) {
+                if (!isWaitingForStroke && isRunning) {
+                    uiElements.dist.innerText = Math.max(0, dist - startDistanceOffset);
+                } else {
+                    uiElements.dist.innerText = dist;
+                }
+            }
+            offset += 3;
+        }
+
+        if (flags & (1 << 3)) {
+            let pace = view.getUint16(offset, true);
+            currentRowerData.pace = pace;
+            if (pace > 0 && pace < 3600) {
+                let mins = Math.floor(pace / 60);
+                let secs = pace % 60;
+                if(uiElements.pace) uiElements.pace.innerText = `${mins}:${secs.toString().padStart(2, '0')}`;
+            }
+            offset += 2;
+        }
+
+        if (flags & (1 << 4)) offset += 2;
+
+        if (flags & (1 << 5)) {
+            let watts = view.getInt16(offset, true);
+            currentRowerData.watts = watts;
+            if(uiElements.watts) uiElements.watts.innerText = watts;
+            if(watts > sessionStats.maxWatts) sessionStats.maxWatts = watts;
+            offset += 2;
+        }
+
+        if (flags & (1 << 6)) offset += 2;
+        if (flags & (1 << 7)) offset += 2;
+
+        if (flags & (1 << 8)) {
+            let cals = view.getUint16(offset, true);
+            currentRowerData.calories = cals;
+            if (uiElements.cals) {
+                if (!isWaitingForStroke && isRunning) {
+                    uiElements.cals.innerText = Math.max(0, cals - startCaloriesOffset);
+                } else {
+                    uiElements.cals.innerText = cals;
+                }
+            }
+            offset += 5;
+        }
+    }
+
+    function connectToDevice(device, isAuto = false) {
+        if (!isAuto) showToastMsg("Připojuji...");
+        device.addEventListener('gattserverdisconnected', onBluetoothDisconnected);
+        device.gatt.connect()
+            .then(server => server.getPrimaryService('fitness_machine'))
+            .then(service => service.getCharacteristic('rower_data'))
+            .then(characteristic => {
+                activeBluetoothCharacteristic = characteristic;
+                return characteristic.startNotifications();
+            })
+            .then(() => {
+                activeBluetoothCharacteristic.addEventListener('characteristicvaluechanged', handleCharacteristicValueChanged);
+                onBluetoothConnected();
+                if (isAuto) showToastMsg("Úspěšně připojeno k Xebex!");
+            })
+            .catch(e => {
+                console.log("Připojení k Bluetooth selhalo:", e);
+                if (!isAuto) showToastMsg("Chyba: " + e.message, true);
+            });
+    }
+
+    function requestAndConnectBluetooth() {
+        if(isConnected) return;
+        if(!navigator.bluetooth) {
+            showToastMsg("Bluetooth není podporován.", true);
+            return;
+        }
+
+        navigator.bluetooth.requestDevice({
+            filters: [{ services: [0x1826] }],
+            optionalServices: []
+        }).then(device => {
+            connectToDevice(device, false);
+        }).catch(e => {
+            console.log("Zrušeno uživatelem:", e);
+            showToastMsg("Připojení zrušeno", true);
+        });
+    }
+
+    async function autoConnectBluetooth() {
+        if (navigator.bluetooth && navigator.bluetooth.getDevices) {
+            try {
+                const devices = await navigator.bluetooth.getDevices();
+                if (devices.length > 0) {
+                    connectToDevice(devices[0], true);
+                }
+            } catch(e) {
+                console.log("Auto-connect se nepodařil.", e);
+            }
+        }
+    }
+
+    function setupDemoTrigger() {
+        const el = document.getElementById('connectionStatus');
+        let pressTimer;
+        let isPressing = false;
+
+        const start = (e) => {
+            if (isPressing) return;
+            isPressing = true;
+            pressTimer = setTimeout(() => { activateDemoMode(); isPressing = false; }, 3000);
+            el.style.opacity = "0.5"; el.style.transform = "scale(0.95)";
+        };
+
+        const end = (e) => {
+            isPressing = false;
+            clearTimeout(pressTimer);
+            el.style.opacity = "1";
+            el.style.transform = "scale(1)";
+        };
+
+        el.addEventListener('touchstart', start, {passive: false});
+        el.addEventListener('touchend', end);
+        el.addEventListener('mousedown', start);
+        el.addEventListener('mouseup', end);
+        el.addEventListener('mouseleave', end);
+    }
+
+    function activateDemoMode() {
+        if(isConnected) return;
+        isDemoMode = !isDemoMode;
+        initAudio();
+        const el = document.getElementById('connectionStatus');
+
+        if (isDemoMode) {
+            el.innerHTML = '<i class="fas fa-magic mr-1"></i> DEMO MÓD';
+            el.className = "px-2 py-1 rounded-full text-[9px] font-bold bg-cyan-600 text-slate-900 border border-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.8)] tracking-widest transition-all";
+            document.getElementById('actionBtn').classList.remove('btn-disabled');
+            document.getElementById('actionBtn').innerText = "START (DEMO)";
+
+            demoIntervalId = setInterval(() => {
+                if (isRunning && !isPaused && !isWaitingForStroke) {
+                    const isManualWork = workoutMode === 'manual' && isWorkPhase;
+                    const isAutoWork = workoutMode === 'auto' && Math.random() > 0.3;
+
+                    const w = (isManualWork || isAutoWork) ? Math.floor(Math.random() * 100 + 150) : Math.floor(Math.random() * 20 + 20);
+                    currentRowerData.watts = w; currentRowerData.spm = (isManualWork || isAutoWork) ? 26 : 12;
+                    currentRowerData.distance += (isManualWork || isAutoWork) ? 4.2 : 1.5; currentRowerData.calories += (isManualWork || isAutoWork) ? 0.3 : 0.1;
+                    currentRowerData.pace = (isManualWork || isAutoWork) ? 115 : 240;
+
+                    if(uiElements.watts) uiElements.watts.innerText = w;
+                    if(uiElements.spm) uiElements.spm.innerText = currentRowerData.spm;
+                    if(uiElements.dist) uiElements.dist.innerText = Math.floor(currentRowerData.distance);
+                    if(uiElements.cals) uiElements.cals.innerText = Math.floor(currentRowerData.calories);
+                    if(uiElements.pace) uiElements.pace.innerText = `${Math.floor(currentRowerData.pace / 60)}:${(currentRowerData.pace % 60).toString().padStart(2, '0')}`;
+                    if(w > sessionStats.maxWatts) sessionStats.maxWatts = w;
+                }
+            }, 1000);
+        } else {
+            if (demoIntervalId) { clearInterval(demoIntervalId); demoIntervalId = null; }
+            onBluetoothDisconnected();
+        }
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+        e.preventDefault();
+        deferredPrompt = e;
+        const installBtn = document.getElementById('btnInstallPwa');
+        if(installBtn) installBtn.classList.remove('hidden');
+    });
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.body.addEventListener('touchstart', initAudio, { passive: true });
+        document.body.addEventListener('mousedown', initAudio, { passive: true });
+
+        ['workMin', 'workSec', 'restMin', 'restSec'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('change', function() { window.formatTimeInput(this, false); });
+        });
+        const setEl = document.getElementById('setInput');
+        if (setEl) setEl.addEventListener('change', function() { window.formatTimeInput(this, true); });
+
+        const installBtn = document.getElementById('btnInstallPwa');
+        if (installBtn) {
+            installBtn.addEventListener('click', async () => {
+                if (deferredPrompt) {
+                    deferredPrompt.prompt();
+                    const { outcome } = await deferredPrompt.userChoice;
+                    if (outcome === 'accepted') {
+                        installBtn.classList.add('hidden');
+                    }
+                    deferredPrompt = null;
+                }
+            });
+        }
+
+        document.getElementById('connectionStatus').addEventListener('click', requestAndConnectBluetooth);
+
+        document.getElementById('btnOpenHistory').addEventListener('click', toggleHistory);
+        document.getElementById('btnCloseHistory').addEventListener('click', toggleHistory);
+
+        document.getElementById('btnOpenSettings').addEventListener('click', toggleSettings);
+        document.getElementById('btnCloseSettings').addEventListener('click', toggleSettings);
+        document.getElementById('btnSaveSettings').addEventListener('click', saveProfileSettings);
+
+        document.getElementById('soundToggle').addEventListener('click', toggleSound);
+
+        document.getElementById('modeManualBtn').addEventListener('click', () => setMode('manual'));
+        document.getElementById('modeAutoBtn').addEventListener('click', () => setMode('auto'));
+
+        document.getElementById('btnWorkMinus').addEventListener('click', () => adjustTime('work', -5));
+        document.getElementById('btnWorkPlus').addEventListener('click', () => adjustTime('work', 5));
+
+        document.getElementById('btnRestMinus').addEventListener('click', () => adjustTime('rest', -5));
+        document.getElementById('btnRestPlus').addEventListener('click', () => adjustTime('rest', 5));
+
+        document.getElementById('btnSetMinus').addEventListener('click', () => { let el=document.getElementById('setInput'); el.value = Math.max(1, parseInt(el.value)-1); formatTimeInput(el, true); });
+        document.getElementById('btnSetPlus').addEventListener('click', () => { let el=document.getElementById('setInput'); el.value = Math.min(99, parseInt(el.value)+1); formatTimeInput(el, true); });
+
+        document.getElementById('actionBtn').addEventListener('click', toggleWorkout);
+        document.getElementById('pauseBtn').addEventListener('click', togglePause);
+
+        document.getElementById('navWorkout').addEventListener('click', () => switchTab('workout'));
+        document.getElementById('navAnalysis').addEventListener('click', () => switchTab('analysis'));
+
+        document.getElementById('btnShare').addEventListener('click', handleShareResult);
+
+        document.addEventListener('visibilitychange', async () => {
+            if (document.visibilityState === 'visible' && isRunning) await requestWakeLock();
+        });
+
+        loadSettings();
+        initChart();
+        setupDemoTrigger();
+        setMode(workoutMode);
+
+        autoConnectBluetooth();
+    });
+</script>
+</body>
+</html>
