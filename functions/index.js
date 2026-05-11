@@ -97,20 +97,18 @@ exports.analyzeWorkout = onCall(async (request) => {
         profilText = `Uživatel je ${profil.pol} (věk: ${profil.vuzrast} let, váha: ${profil.teglo} kg).`;
     }
 
-    // ROBUSTNÍ FILTR PODLE CLAUDA:
-    // Vytvoříme absolutně čistý objekt nezávisle na tom, z jaké verze appky data přijdou
+    
     const statsForAI = {
         cas_sekundy: stats.cas || stats.durationSeconds,
         vzdalenost_metry: stats.vzdalenost || stats.totalDistance,
         prum_watty: stats.prum_watty || stats.avgWatts,
         prum_spm: stats.prum_spm || stats.avgSpm,
-        // Bezpečný filtr: Pokud přijde 'intervaly' z naší appky, vezmeme je. Pokud by přišly syrové 'intervals', vyfiltrujeme 'work'.
         pracovni_intervaly: stats.intervaly || (stats.intervals || []).filter(i => i.type === 'work').map(i => `${i.duration}s ${i.avgWatts}W`),
         profil: stats.profil
-        // historyLog zcela schválně ignorujeme
+        
     };
     
-    // OPRAVENÝ PROMPT OD CLAUDA
+    
     const promptText = `Působíš jako elitní trenér veslování. ${profilText}
 KONTEXT: Data obsahují POUZE pracovní intervaly (pauzy byly odstraněny). Hodnoť konzistenci a výkon výhradně z těchto dat.
 Úkol: Napiš text o přesně 3 větách. Věta 1 a 2: Věcné zhodnocení výkonu s odkazem na metriky. Věta 3: Vysoce specifický tip pro techniku nebo fyziologii.
